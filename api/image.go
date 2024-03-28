@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 
@@ -13,6 +15,7 @@ import (
 )
 
 // ffmpeg -i "imagens-gratis.png" -q:v 1 -update true "imagens-gratis-out10.jpg"
+// ffmpeg -i "imagens-gratis-out10.jpg" -filter:v scale="iw/1:ih/2" "imagens-gratis-out-out2.jpg"
 // ffmpeg -i "imagens-gratis-out10.jpg" -filter:v scale=360:-2 "imagens-gratis-out-out2.jpg"
 // ffmpeg -i "imagens-gratis-out10.jpg" -q:v 1 -update true "imagens-gratis-out11.jpg"
 
@@ -52,43 +55,49 @@ func Convert(w http.ResponseWriter, r *http.Request) {
 	// read file
 	f, h, err := r.FormFile("image")
 	if err != nil {
-		fmt.Printf("Error reading file of 'image' form data. Reason: %s", err)
+		fmt.Printf("Error reading file of 'image' form data. Reason: %s\n", err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
 	filebytes, err := io.ReadAll(f)
 	if err != nil {
-		errStr := fmt.Sprintf("Error in reading the file buffer %s\n", err)
+		errStr := fmt.Sprintf("Error in reading the file buffer. Reason: %s\n", err)
 		fmt.Println(errStr)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	sourceImg := ImageFile{
+	srcImg := ImageFile{
 		Name:     removedExt(h.Filename),
 		Ext:      filepath.Ext(h.Filename),
 		MimeType: h.Header.Get("Content-Type"),
 		Bytes:    filebytes,
 	}
 
-	// process convert
-	sourceImgBuf := bytes.NewBuffer(sourceImg.Bytes)
-	buf := bytes.NewBuffer(nil)
-	err = ffmpeg.Input("pipe:").WithInput(sourceImgBuf).
-		Output("pipe:", ffmpeg.KwArgs{"f": "image2", "q:v": "1", "c:v": "mjpeg", "update": "true"}).
-		WithOutput(buf).
-		Run()
+	// options
+	q := r.FormValue("q")
+	if q == "" {
+		q = "1"
+	}
+
+	// fmt.Printf("type: %s\n form : %s\n", reflect.TypeOf(opts["q"][0]), opts["q"][0])
+	fmt.Printf("type: %s\n form : %s\n", reflect.TypeOf(q), q)
+
+	buf, err := convertImg(&srcImg.Bytes, ffmpeg.KwArgs{
+		"q:v": q,
+		"c:v": "mjpeg",
+	})
 
 	if err != nil {
-		fmt.Printf("failed processing image. Err: %s\n", err)
+		fmt.Printf("failed processing image. Reason: %s\n", err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
 	// return converted
-	w.Header().Set("Content-Type", sourceImg.MimeType)
-	w.Header().Set("Content-Disposition", `inline; filename="`+sourceImg.Name+`.jpg"`)
+	w.Header().Set("Content-Type", srcImg.MimeType)
+	w.Header().Set("Content-Disposition", `inline; filename="`+srcImg.Name+`.jpg"`)
 	w.Write(buf.Bytes())
 }
 
@@ -104,6 +113,28 @@ func Compress(w http.ResponseWriter, r *http.Request) {
 
 func removedExt(f string) string {
 	return strings.TrimSuffix(f, filepath.Ext(f))
+}
+
+func convertImg(sourceImgBytes *[]byte, outputKwArgs ffmpeg.KwArgs) (*bytes.Buffer, error) {
+	defOutputKwArgs := ffmpeg.KwArgs{
+		"f": "image2",
+		// "q:v":    "1",
+		// "c:v":    "mjpeg",
+		"update": "true",
+	}
+
+	maps.Copy(defOutputKwArgs, outputKwArgs)
+
+	// process convert
+	sourceImgBuf := bytes.NewBuffer(*sourceImgBytes)
+	buf := bytes.NewBuffer(nil)
+	err := ffmpeg.Input("pipe:").WithInput(sourceImgBuf).
+		Output("pipe:", defOutputKwArgs).
+		WithOutput(buf).
+		Silent(true).
+		Run()
+
+	return buf, err
 }
 
 // func saveFile(f multipart.File, h *multipart.FileHeader) (ImageFile, error) {
